@@ -5,7 +5,7 @@ Uma API de monitoramento de servidor desenvolvida em Rust que fornece métricas 
 ## Características
 
 - 🚀 **Alto Desempenho**: Construída com Rust para máxima eficiência - Cerca de 2.3MB de memoria
-- 📊 **Métricas em Tempo Real**: Monitore CPU, memória, disco e rede
+- 📊 **Métricas em Tempo Real**: Monitore CPU
 - 🔌 **API RESTful**: Interface simples e intuitiva
 - 📈 **Coleta de Dados**: Histórico de métricas para análise
 
