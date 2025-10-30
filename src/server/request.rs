@@ -4,8 +4,8 @@ use std::{
 };
 
 use http::{HeaderValue, Method, Request, Response, StatusCode};
-use http_body_util::Full;
-use hyper::body::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::body::{Bytes, Frame};
 use rusqlite::Connection;
 use sysinfo::System;
 
@@ -30,13 +30,30 @@ fn request_options(
     return Ok(res);
 }
 
+async fn response(data: &str, status: StatusCode) -> Result<Response<Full<Bytes>>, Infallible> {
+    let allow_origin = HeaderValue::from_static("*");
+    let allow_methods = HeaderValue::from_static("GET, POST, DELETE, OPTIONS");
+    let allow_headers = HeaderValue::from_static("Content-Type, Authorization");
+
+    let res = Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", allow_origin)
+        .header("Access-Control-Allow-Methods", allow_methods)
+        .header("Access-Control-Allow-Headers", allow_headers)
+        .body(Full::new(Bytes::from(data.to_string())))
+        .unwrap();
+
+    Ok(res)
+}
+
 pub async fn received_request(
     request: Request<hyper::body::Incoming>,
     sys: &System,
     con: Arc<Mutex<Connection>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let allow_origin = HeaderValue::from_static("*");
-    let allow_methods = HeaderValue::from_static("GET, POST, OPTIONS");
+    let allow_methods = HeaderValue::from_static("GET, POST, DELETE, OPTIONS");
     let allow_headers = HeaderValue::from_static("Content-Type, Authorization");
 
     if request.method() == Method::OPTIONS {
@@ -109,6 +126,107 @@ pub async fn received_request(
         res.headers_mut()
             .insert("Access-Control-Allow-Origin", allow_origin.clone());
         return Ok(res.map(Full::new));
+    }
+
+    if request.uri().path() == "/urls" && request.method() == Method::GET {
+        let response = database::sqlite::urls::get_urls(&con);
+        let urls_data = response
+            .into_iter()
+            .map(|url_data| {
+                format!(
+                    "{{\"id\": {}, \"url\": \"{}\", \"status_code\": \"{:?}\", \"created_at\": \"{}\"}}",
+                    url_data.id, url_data.url, url_data.status_code, url_data.created_at
+                )
+            })
+            .collect::<Vec<String>>()
+            .join(",");
+        let response_data = format!("{{\"data\": [{}]}}", urls_data);
+        let mut res = Response::new(Bytes::from(response_data));
+        res.headers_mut()
+            .insert("Content-Type", HeaderValue::from_static("application/json"));
+        res.headers_mut()
+            .insert("Access-Control-Allow-Origin", allow_origin.clone());
+        return Ok(res.map(Full::new));
+    }
+
+    if request.uri().path() == "/urls" && request.method() == Method::POST {
+        let body_bytes = request.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        // Parse manual do JSON para extrair a URL
+        if let Some(start) = body_str.find("\"url\"") {
+            if let Some(colon_pos) = body_str[start..].find(':') {
+                let after_colon = &body_str[start + colon_pos + 1..];
+                if let Some(quote_start) = after_colon.find('"') {
+                    if let Some(quote_end) = after_colon[quote_start + 1..].find('"') {
+                        let url = &after_colon[quote_start + 1..quote_start + 1 + quote_end];
+
+                        // Salvar a URL no banco de dados
+                        let result = database::sqlite::urls::create_url(con, url, None);
+
+                        let response_data = match result {
+                            Ok(_) => format!(
+                                "{{\"message\": \"URL criada com sucesso\", \"url\": \"{}\"}}",
+                                url
+                            ),
+                            Err(_) => "{\"error\": \"Erro ao criar URL\"}".to_string(),
+                        };
+
+                        let mut res = Response::new(Bytes::from(response_data));
+                        res.headers_mut()
+                            .insert("Content-Type", HeaderValue::from_static("application/json"));
+                        res.headers_mut()
+                            .insert("Access-Control-Allow-Origin", allow_origin.clone());
+                        return Ok(res.map(Full::new));
+                    }
+                }
+            }
+        }
+
+        // Resposta de erro se JSON inválido ou sem campo 'url'
+        let error_response = "{\"error\": \"JSON inválido ou campo 'url' ausente\"}";
+        let mut res = Response::new(Bytes::from(error_response));
+        res.headers_mut()
+            .insert("Content-Type", HeaderValue::from_static("application/json"));
+        res.headers_mut()
+            .insert("Access-Control-Allow-Origin", allow_origin.clone());
+        return Ok(res.map(Full::new));
+    }
+
+    if request.uri().path() == "/urls" && request.method() == Method::DELETE {
+        let body_bytes = request.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice::<serde_json::Value>(&body_bytes);
+
+        if json.is_err() {
+            let response = response(
+                "{\"error\": \"JSON inválido\"}",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .await;
+            return response;
+        }
+        let json = json.unwrap();
+        let id = json.get("id");
+        if id.is_none() || !id.unwrap().is_i64() {
+            let response = response(
+                "{\"error\": \"ID inválido ou ausente\"}",
+                StatusCode::BAD_REQUEST,
+            )
+            .await;
+            return response;
+        }
+
+        let id = id.unwrap().as_i64().unwrap() as i32;
+        let result = database::sqlite::urls::delete_url(&con.lock().unwrap(), id);
+        let response_data = match result {
+            Ok(_) => format!(
+                "{{\"message\": \"URL com ID {} deletada com sucesso\"}}",
+                id
+            ),
+            Err(_) => "{\"error\": \"Erro ao deletar URL\"}".to_string(),
+        };
+        let response = response(&response_data, StatusCode::OK).await;
+        return response;
     }
 
     Ok(Response::new(Full::new(Bytes::from("Hello, World!"))))

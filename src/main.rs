@@ -17,17 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     database::sqlite::flush::flush_cpu_info(connection.clone()).await?;
 
-    let flush_connection = connection.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-        loop {
-            interval.tick().await;
-            if let Err(e) = database::sqlite::flush::flush_cpu_info(flush_connection.clone()).await
-            {
-                eprintln!("Error flushing CPU info: {}", e);
-            }
-        }
-    });
+    jobs::clear_database::clear_database(connection.clone());
+    jobs::make_request::make_request(connection.clone());
 
     server::http::start_http_server(connection).await?;
 

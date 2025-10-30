@@ -883,6 +883,7 @@ dependencies = [
  "hyper-util",
  "reqwest",
  "rusqlite",
+ "serde_json",
  "sysinfo",
  "tokio",
 ]
